@@ -1,0 +1,1266 @@
+EDA of Prosper Loan Company 
+========================================================
+
+>
+
+### 1.可视化探索分析
+
+### 2.建立数据模型
+
+### 3.最终图形和摘要
+
+### 4.总结反思
+
+>
+
+##### 背景：
+
+2008年11月24日，SEC判定Prosper违反了《1933年证券法》，要求Prosper暂定运营。经审查后，考虑P2P借贷模型的特性，SEC将所有P2P借贷定义为债券销售，要求所有P2P企业都在SEC登记注册。2008年11月26日，加州最高法院对Prosper提起集体诉讼，控告Prosper违反加州和联邦法律发行和出售未认证和注册的证券。
+
+2009年7月，Prosper的贷款在获得SEC的注册后，重新开发了网站。但重新开业后，竞标贷款限制在美国28个州和哥伦比亚地区的居民。有47个州的居民可以再Prosper上借款，另外三个州（Iowa、Maine、North Dakota）则不允许。
+
+>
+
+### 分析目标：
+
+检查数据后可以发现，信用等级在2009年前后有所调整。因此本次的分析是探索：
+
+- 容易违约的客户具有哪些特点？
+- 公司信用等级调整后是否更好地反映了借款人的信用情况？
+
+>
+
+### 分析思路：
+
+先找出与违约可能有关的变量，分析这些变量是否是对违约有影响，接着探索信用等级的变化产生的后果，最后建立违约预测模型。
+
+>
+
+Variable	|	Description
+- | :-: | -: 
+CreditGrade	|	借款人信用评级（2009年之前）
+ProsperRating (numeric/Alpha)	|	信用评级（2009年之后）
+LoanStatus	|	贷款状态
+BorrowerRate	|	借款人的贷款利率
+ListingCategory..numeric.	|	贷款类型
+EmploymentStatusDuration	|	借款人就业持续时间
+IsBorrowerHomeowner	|	借款人是否为业主
+CreditScore	|	用户信用评级机构提供的借款人的信用评级
+InquiriesLast6Months	|	过去6个月征信记录
+DelinquenciesLast7Years	|	过去7年拖欠次数
+BankcardUtilization	|	可用循环信贷被使用的百分比
+DebtToIncomeRatio	|	借款人的债务收入比
+IncomeRange	|	借款人收入范围
+BorrowerState	|	借款人所在州的缩写
+Occupation	|	借款人职业
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE, packages}
+library(tidyr)
+library(dplyr)
+
+library(ggplot2)
+library(GGally)
+library(gridExtra)
+library(ggthemes)
+library(RColorBrewer)
+
+library(caret)
+library(randomForest)
+```
+
+
+```{r echo=FALSE, Load_the_Data}
+# Load the Data
+data <- read.csv('prosperLoanData.csv',
+                     stringsAsFactors = FALSE,na.strings = c(""))
+
+# ------------------------------------------------------------------------
+
+### 选择需要的数据
+df<-select(data,
+           LoanStatus,
+           CreditGrade,
+           ProsperRating..Alpha.,
+           BankcardUtilization,
+           BorrowerState,
+           IncomeRange,
+           Occupation,
+           LoanOriginationDate,
+           DebtToIncomeRatio,
+           DelinquenciesLast7Years,
+           BorrowerRate,
+           IsBorrowerHomeowner,
+           LoanOriginalAmount,
+           ListingCategory..numeric.,
+           EmploymentStatus,
+           EmploymentStatusDuration,
+           InquiriesLast6Months,
+           CreditScoreRangeLower,
+           CreditScoreRangeUpper
+)
+```
+
+
+```{r echo=FALSE}
+### 新增2列
+
+# ------------------------------------------------------------------------
+
+# 整合信用分数,数据中有高低范围,将这两个数值取平均值做计算
+df$CreditScore <-(df$CreditScoreRangeLower+df$CreditScoreRangeUpper)/2
+
+# ------------------------------------------------------------------------
+
+# 先转换日期格式
+df$LoanOriginationDate <- as.Date(df$LoanOriginationDate)
+
+# 将数据以7月为分界点，分成两段
+df$Phase[df$LoanOriginationDate > "2009-07-01"] <- "After"
+df$Phase[df$LoanOriginationDate < "2009-07-01"] <- "Before"
+
+df<-subset(df,select = c(-CreditScoreRangeLower,
+                         -CreditScoreRangeUpper))
+```
+
+>
+
+>
+
+# 1.可视化探索分析
+
+>
+
+### 1.1单变量分析
+
+>
+
+##### 找出缺失值小于10000的变量
+
+```{r echo=FALSE}
+for (i in names(df)){
+  j<-sum(is.na(df[[i]]))
+  if (j>0){
+    print(i)
+  }
+}
+```
+
+>
+
+##### （1）查看EmploymentStatusDuration的分布情况（虚线：中位数，实线：平均值）
+
+
+```{r echo=FALSE, warning=FALSE}
+
+ggplot(aes(x=EmploymentStatusDuration),
+           data=subset(df,!is.na(EmploymentStatusDuration)))+
+  geom_density(color="#E7B800",fill="#E7B800",alpha=0.3)+
+  geom_vline(aes(xintercept=median(EmploymentStatusDuration,na.rm =T)),
+             linetype="dashed",lwd=1)+
+  geom_vline(aes(xintercept=mean(EmploymentStatusDuration,na.rm =T)),lwd=1)+
+  xlim(0,quantile(df$EmploymentStatusDuration,0.9,na.rm = T))+
+  theme(axis.title.x = element_blank(), axis.title.y = element_blank(),
+        plot.title=element_text(size=12))+
+  ggtitle("The density of EmploymentStatusDuration")
+```
+
+##### 大部分雇佣持续时间集中在0~50的范围内，其数值的分布是右偏的正态分布，特点是：众数(最高点)>中位数>平均值。
+
+>
+
+##### （2）查看CreditScore的分布情况（虚线：中位数，实线：平均值）
+
+
+```{r echo=FALSE, warning=FALSE}
+
+ggplot(aes(x=CreditScore),data=subset(df,!is.na(CreditScore)))+
+  geom_bar(color="#CC66FF",fill="purple",alpha=0.3)+
+  geom_vline(aes(xintercept=median(CreditScore,na.rm =T)),
+             linetype="dashed",lwd=1)+
+  geom_vline(aes(xintercept=mean(CreditScore,na.rm =T)),lwd=1)+
+  scale_x_continuous(limits = c(440,quantile(df$CreditScore,0.999,na.rm =T)),
+                     breaks=seq(440,840,40))+
+  theme(axis.title.x = element_blank(), 
+        axis.title.y = element_blank(),
+        plot.title=element_text(size=12))+
+  ggtitle("The density of CreditScore")
+```
+
+##### 可见信用分数大多数集中在680~720的区间内，其分布是左偏的正态分布，特点是：众数（最高点）<中位数<平均值。
+>
+
+##### （3）查看InquiriesLast6Months的分布情况（虚线：中位数，实线：平均值）
+
+
+```{r echo=FALSE, warning=FALSE}
+ggplot(aes(x=InquiriesLast6Months),
+           data=subset(df,!is.na(InquiriesLast6Months)))+
+  geom_bar(color="skyblue",fill="skyblue",alpha=0.3)+
+  geom_vline(aes(xintercept=median(InquiriesLast6Months,
+                                   na.rm =T)),linetype="dashed",lwd=1)+
+  geom_vline(aes(xintercept=mean(InquiriesLast6Months,na.rm =T)),lwd=1)+
+  scale_x_continuous(limits = c(0,quantile(df$InquiriesLast6Months,0.99,na.rm =T)),
+                     breaks=seq(0,10,1))+
+  theme(axis.title.x = element_blank(), 
+        axis.title.y = element_blank(),
+        plot.title=element_text(size=12))+
+  ggtitle("The density of InquiriesLast6Months")
+```
+
+##### 过去6个月征信次数集中在1~1.5的区间内，其众数=中位数>平均值。
+
+
+
+>
+
+##### （4）查看DelinquenciesLast7Years的分布情况（虚线：中位数，实线：平均值）
+
+
+```{r echo=FALSE, warning=FALSE}
+
+ggplot(aes(x=DelinquenciesLast7Years),
+           data=subset(df,!is.na(DelinquenciesLast7Years)))+
+  geom_bar(color="#339933",fill="#339933",alpha=0.3)+
+  geom_vline(aes(xintercept=median(DelinquenciesLast7Years,
+                                   na.rm =T)),linetype="dashed",lwd=1)+
+  geom_vline(aes(xintercept=mean(DelinquenciesLast7Years,na.rm =T)),lwd=1)+
+  scale_x_continuous(limits = c(-1,quantile(df$DelinquenciesLast7Years,0.9,na.rm =T)),
+                     breaks=seq(-1,30,1))+
+  theme(axis.title.x = element_blank(), 
+        axis.title.y = element_blank(),
+        plot.title=element_text(size=12))+
+  ggtitle("The density of DelinquenciesLast7Years")
+
+```
+
+##### 过去7年的拖欠次数大多数为1，其分布的众=中位数>平均值。
+
+>
+
+##### （5）查看BankcardUtilization的分布情况（虚线：中位数，实线：平均值）
+
+
+```{r echo=FALSE, warning=FALSE}
+ggplot(aes(x=BankcardUtilization),
+           data=subset(df,!is.na(BankcardUtilization)))+
+  geom_density(color="pink",fill="pink",alpha=0.3)+
+  geom_vline(aes(xintercept=median(BankcardUtilization,
+                                   na.rm =T)),linetype="dashed",lwd=1)+
+  geom_vline(aes(xintercept=mean(BankcardUtilization,na.rm =T)),lwd=1)+
+  xlim(quantile(df$BankcardUtilization,0.1,na.rm = T),
+                quantile(df$BankcardUtilization,0.99,na.rm = T))+
+  theme(axis.title.x = element_blank(), 
+        axis.title.y = element_blank(),
+        plot.title=element_text(size=12))+
+  ggtitle("The density of BankcardUtilization")
+```
+
+##### 可循还贷款的使用率在0和1.0附近都有比较多的分布，其中平均值>中位数。
+
+>
+
+##### （6）查看DebtToIncomeRatio的分布情况（虚线：中位数，实线：平均值）
+
+
+```{r echo=FALSE, warning=FALSE}
+
+ggplot(aes(x=DebtToIncomeRatio),
+           data=subset(df,!is.na(DebtToIncomeRatio)))+
+  geom_density(color="#CC9966",fill="#CC9966",alpha=0.3)+
+  geom_vline(aes(xintercept=median(DebtToIncomeRatio,
+                                   na.rm =T)),linetype="dashed",lwd=1)+
+  geom_vline(aes(xintercept=mean(DebtToIncomeRatio,na.rm =T)),lwd=1)+
+  xlim(0,quantile(df$DebtToIncomeRatio,0.9,na.rm = T))+
+  theme(axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        plot.title=element_text(size=12))+
+  ggtitle("The density of DebtToIncomeRatio")
+```
+
+##### 债务收入比率主要集中在0.1~0.3的范围内，是稍稍右偏的正态分布，其中众数>中位数>平均值。
+
+
+>
+
+##### 根据变量的不同分布，用不同方法填充缺失值
+
+
+```{r echo=FALSE, warning=FALSE}
+
+# 用四分位数Q1和Q3之间正态分布的随机数填充下列浮点型变量
+
+list_ctn<-c("BankcardUtilization","DebtToIncomeRatio")
+
+for (i in list_ctn){
+  j<-quantile(df[[i]],probs = c(0.25,0.75),na.rm = T)
+  df[[i]][which(df[[i]] %in% NA)]<-runif(nrow(df),j[1],j[2])
+}
+
+# ------------------------------------------------------------------------
+
+# 用四分位数Q1和Q3之间正态分布的随机整数填充下列整数型变量
+
+list_int<-list("EmploymentStatusDuration","CreditScore",
+               "InquiriesLast6Months","DelinquenciesLast7Years")
+for (i in list_int){
+  j<-quantile(df[[i]],probs = c(0.25,0.75),na.rm = T)
+  df[[i]][which(df[[i]] %in% NA)]<-round(runif(nrow(df),j[1],j[2]))
+}
+
+
+# 处理离散数据"BorrowerState"，"Occupation"，"EmploymentStatus"
+# 其实从逻辑上理解，NA就是Not available的意思，因此下列定性变量用同样意思的文字来赋值
+df$EmploymentStatus[which(df$EmploymentStatus%in% NA)]<-"Not available"
+df$Occupation[which(df$Occupation%in% NA)]<-"other"
+df$BorrowerState[which(df$BorrowerState%in% NA)]<-"unknown"
+```
+
+
+##### 填补完缺失值后，再处理信用等级、贷款状态、收入范围等变量的数据整洁度问题
+
+
+```{r echo=FALSE, warning=FALSE}
+# 将信用等级变量CreditGrade/ProsperRating..Alpha.变为有序变量
+
+# 2009年7月之前
+df$CreditGrade <- 
+  ordered(df$CreditGrade,
+          levels = c("NC","HR","E","D","C","B","A","AA"))
+# 2009年7月之后
+df$ProsperRating..Alpha.<-
+  ordered(df$ProsperRating..Alpha.,
+          levels = c("HR","E","D","C","B","A","AA"))
+
+# ------------------------------------------------------------------------
+
+### 量化IncomeRange变量
+df$IncomeRange<-ordered(df$IncomeRange,
+                        levels = c('$0','$1-24,999',
+                                   '$25,000-49,999',
+                                   '$50,000-74,999',
+                                   '$75,000-99,999',
+                                   '$100,000+'))%>%as.integer()
+
+a<-quantile(df$IncomeRange,probs = c(0.25,0.75),na.rm = T)
+df$IncomeRange[which(df$IncomeRange %in% NA)]<-round(runif(nrow(df),a[1],a[2]))
+
+# ------------------------------------------------------------------------
+
+### 将贷款状态变量LoanStatus变为二分类
+
+# 复制一份数据，以便后面可视化
+dt<-df
+
+# 将LoanStatus中的Past Due多少天统一合并成pastDue组
+PastDue <- c("Past Due (>120 days)",
+             "Past Due (1-15 days)",
+             "Past Due (16-30 days)",
+             "Past Due (31-60 days)",
+             "Past Due (61-90 days)",
+             "Past Due (91-120 days)")
+
+##统一归类为Defaulted,Current,Completed
+
+# 逾期的贷款不算坏账，逾期后经过催账依然没有还款的才是违约
+df$LoanStatus[df$LoanStatus %in% PastDue] <-"Completed"
+dt$LoanStatus[dt$LoanStatus %in% PastDue] <-"PastDue"
+
+df$LoanStatus[df$LoanStatus=="Cancelled"]<-"Current"
+
+df$LoanStatus[df$LoanStatus=="Chargedoff"]<-"Defaulted"
+
+df$LoanStatus[df$LoanStatus=="FinalPaymentInProgress"]<-"Completed"
+
+### 删除current数据
+df <- df[!(df$LoanStatus=="Current"),]
+
+# ------------------------------------------------------------------------
+
+### 将变量因子化处理
+factor_vars <- c('BorrowerState','Occupation',
+                 'IsBorrowerHomeowner',
+                 'ListingCategory..numeric.',
+                 'EmploymentStatus','CreditGrade',
+                 'ProsperRating..Alpha.')
+df[factor_vars]<- lapply(df[factor_vars], function(x) as.factor(x))
+```
+
+
+
+>
+
+##### （7）查看两种不同的信用等级
+
+
+```{r echo=FALSE, fig.height=6, fig.width=8, message=FALSE, warning=FALSE}
+q1<-ggplot(aes(CreditGrade,fill=CreditGrade),
+           data=subset(data,!is.na(CreditGrade))) + 
+  geom_bar(alpha=0.5)
+
+q2<-ggplot(aes(ProsperRating..Alpha.,fill=ProsperRating..Alpha.),
+           data=subset(data,!is.na(ProsperRating..Alpha.))) +
+  geom_bar(alpha=0.5)
+
+grid.arrange(q1,q2) 
+```
+
+##### 2009年7月前后的信用等级制度发生了变化。之前的CreditGrade是8个等级，而之后的ProsperRate是7个等级。
+
+>
+
+##### （8）查看贷款状态的分类（去掉了“已取消”）
+
+
+```{r echo=FALSE, fig.height=8, fig.width=8, message=FALSE, warning=FALSE}
+
+dt <- dt[!(dt$LoanStatus=="Cancelled"),]
+
+loan_status<-data.frame(sort(table(dt$LoanStatus)))
+colnames(loan_status)<-c('name','count')
+
+myLabel <- paste(loan_status$name,
+                round(100*loan_status$count/sum(loan_status$count),3), "%")
+
+ggplot(loan_status, aes(x = "", y = count)) +
+  geom_bar(stat = "identity",fill=c('#CC6633','#FFCCCC',
+                                    '#CC6666','#CC9999',
+                                    '#99CCCC','#CCCC99'),
+           width =4,alpha=0.5)+
+  coord_polar(theta = "y")+
+  geom_text(aes(x = c(4.3,4,4,4.5,1,1),
+                y = c(112000,5000,9000,15000,35000,85000),
+                label = myLabel))+theme_few()+
+  theme(axis.text=element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks=element_blank(),
+        panel.border=element_blank(),
+        plot.title=element_text(size=12))+
+  ggtitle("LoanStatus")
+
+```
+
+##### 蓝色系扇形代表没有违约的，红色系是以及违约的，绿色系是当前状态，无法判断是否违约。
+##### 目前大部分的贷款状态是还在进行的未逾期的贷款状态：
+
+- current占比49.65%；已完成的贷款（completed）占比33.42%
+- 坏账（chargedoff）的占比10.52%
+- 4.4%的贷款已经违约
+- 1.8%的逾期
+- 0.18%快还完贷款了
+- 0.004%取消了贷款（数据太少，显示出来只有一条线，因此删掉）
+
+>
+
+
+##### （9）查看雇佣持续时间变量的分布情况
+
+
+```{r echo=FALSE, fig.height=4, fig.width=8, message=FALSE, warning=FALSE}
+df$duration<-cut(df$EmploymentStatusDuration,c(0,25,75,150,250,375,525))
+
+ggplot(data = subset(df,!is.na(duration)),
+       aes(x = EmploymentStatusDuration, color = duration)) +
+  geom_line(stat = 'bin',binwidth=1,size=2)+
+  scale_x_continuous(breaks = seq(0,800,100))+
+  scale_color_brewer(palette = "Set3",
+                     guide = guide_legend(title = 'Duration',
+                                          reverse = TRUE,
+                     override.aes = list(alpha = 1, size = 2)))
+```
+
+##### 从上图得知，雇佣持续时间呈现指数分布，雇佣持续时间较少的借款人数量比较多。
+
+>
+
+##### （10）查看借款人地区的分布情况
+
+```{r echo=FALSE, fig.height=4, fig.width=10, message=FALSE, warning=FALSE}
+
+BorrowerState<-data.frame(sort(table(df$BorrowerState)))
+colnames(BorrowerState)<-c('name','count')
+
+ggplot(data=subset(BorrowerState,BorrowerState$name!='unknown'),
+       aes(x = name,y = count, fill = count)) +
+  geom_bar(stat='identity') + 
+  theme(axis.title.x = element_blank(),
+        axis.text.x=element_text(size=8),
+        plot.title=element_text(size=12))+
+  ggtitle("Distribution of BorrowerStates")
+```
+
+##### California，Florida，Illinois，Georgia，Texas这几个州的借款人数较多；
+##### 同时North Dakota，Wyoming，Vermont，South Dakota等几个州的借款人数较少。
+
+
+
+>
+
+
+### 1.2双变量分析
+
+>
+
+##### （10）借款人"是否有房产”与“贷款状态”
+
+
+```{r echo=FALSE, fig.height=4, fig.width=8, message=FALSE, warning=FALSE}
+mosaicplot(table(df$IsBorrowerHomeowner,df$LoanStatus),
+           main="IsBorrowerHomeowner & LoanStatus",
+           color = c('pink','skyblue'))
+```
+
+##### 有房产的借款人比没有房产的借款人的违约情况稍稍少一点。
+
+>
+
+
+##### （11）借款人"债务收入比率”与“贷款状态”
+
+
+```{r echo=FALSE, fig.height=4, fig.width=8, message=FALSE, warning=FALSE}
+ggplot(df,aes(x = DebtToIncomeRatio,color = LoanStatus)) +
+  geom_line(stat='bin',binwidth=0.01,size=1)+
+  xlim(0,quantile(df$DebtToIncomeRatio,0.99,na.rm = T))
+```
+
+##### 目前没有看出明显的债务收入比率与贷款状态之间的关系。
+
+>
+
+
+##### （12）借款人"收入范围”与“贷款状态”
+
+
+```{r echo=FALSE, fig.height=4, fig.width=8, message=FALSE, warning=FALSE}
+ggplot(data = df,
+       aes(x = IncomeRange, fill = LoanStatus)) +
+  geom_bar(position="fill",alpha=0.5)+
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))+
+  scale_x_continuous(breaks=seq(1,6,1),
+                     labels =c('$0','$1-24,999',
+                               '$25,000-49,999',
+                               '$50,000-74,999',
+                               '$75,000-99,999',
+                               '$100,000+'))+
+  theme(plot.title=element_text(size=12),
+        axis.title.x = element_blank())+
+  ggtitle("IncomeRange & LoanStatus")
+        
+```
+
+##### 违约占比随着收入违约的增加呈上升趋势。
+
+
+>
+
+
+##### （13）借款人"过去6个月征信次数"，"过去7年拖欠次数"与"贷款状态"
+
+
+```{r echo=FALSE, fig.height=6, fig.width=8, message=FALSE, warning=FALSE}
+
+q1<-ggplot(aes(LoanStatus,InquiriesLast6Months),data =df) +
+  geom_boxplot(color='pink',fill='pink',alpha=0.3,size=0.7) +
+  #在分析中计算了中位数
+  stat_summary(fun.y = mean,geom = 'point',color='#6699CC',size=2) +
+  ylim(-1,quantile(df$InquiriesLast6Months,0.9))+theme_few()+
+  theme(plot.title=element_text(size=12))+
+  ggtitle("InquiriesLast6Months & LoanStatus")+
+  theme(axis.title.x = element_blank())
+
+q2<-ggplot(aes(LoanStatus,DelinquenciesLast7Years),data =df) +
+  geom_boxplot(color='skyblue',fill='skyblue',alpha=0.3,size=0.7) +
+  #在分析中计算了中位数
+  stat_summary(fun.y = mean,geom = 'point',color='#FF6699',size=2) +
+  ylim(-1,quantile(df$DelinquenciesLast7Years,0.9))+theme_few()+
+  theme(plot.title=element_text(size=12))+
+  ggtitle("DelinquenciesLast7Years & LoanStatus")
+
+grid.arrange(q1,q2)
+```
+
+##### 违约的借款人过去6个月征信次数和过去7年拖欠次数都比没有违约的人高。
+
+>
+
+##### （14）借款人“所在地区”与“贷款状态”的分布
+
+
+```{r echo=FALSE, fig.height=4, fig.width=8, message=FALSE, warning=FALSE}
+ggplot(aes(BorrowerState,fill=LoanStatus),
+       data = subset(df,df$BorrowerState!="unknown")) + 
+  geom_bar(position="fill",color='white',alpha=0.7,size=0.1) +
+  scale_y_continuous(breaks = seq(0,8000,500))+
+  theme(axis.text.x = element_text(angle = 90,size=8),
+        axis.text.y = element_text(size=8),
+        axis.title.x = element_blank(),
+        plot.title=element_text(size=12))+
+  ggtitle("Distribution of BorrowerStates")
+```
+
+##### 来自不同的州的借款人，违约的概率也不同:	
+##### Alabama阿拉巴马州，Georgia乔治亚州，Iowa爱荷华州等地区的借款人具有较高的违约率。
+
+
+>
+
+### 1.3多变量分析
+
+>
+
+##### （15）借款人“贷款利率”、“信用分数”和“贷款状态”的关系
+
+
+```{r echo=FALSE,  fig.height=4, fig.width=8, warning=FALSE}
+ggplot(aes(x=BorrowerRate,y=CreditScore,color=LoanStatus),data=df)+
+  geom_point(position = 'jitter',alpha=0.8)+
+  xlim(0,quantile(df$BorrowerRate,0.99))+
+  ylim(100,quantile(df$CreditScore,0.99))+
+  scale_color_brewer(palette = "RdPu",
+                     guide = guide_legend(title = 'LoanStatus',
+                                          reverse = TRUE,
+                     override.aes = list(alpha = 1, size = 2)))+
+  theme_few()+
+  theme(plot.title=element_text(size=12))+
+  ggtitle("BorrowerRate & CreditScore & LoanStatus")
+  
+```
+
+
+##### 从散点图分布可以看到，贷款利率较高的（图中靠右部分）违约的情况更多；而贷款利率较低的（图中靠左部分）违约的情况相对较少。
+##### 同时，信用分数较高的（图中靠上方的点）违约情况比信用分数较低的（图中靠下方的点）少。
+
+>
+
+##### （16）借款人"可循环贷款使用率"、"信用等级"和“贷款状态”的关系
+
+
+```{r echo=FALSE, fig.height=4, fig.width=8, message=FALSE, warning=FALSE}
+ggplot(aes(x=ProsperRating..Alpha.,y=BankcardUtilization,
+           fill=LoanStatus,color=LoanStatus),
+       data =subset(df,!is.na(df$ProsperRating..Alpha.))) +
+  geom_boxplot(alpha=0.3,size=0.7) +
+  stat_summary(funy = mean,geom = 'smooth',aes(group = LoanStatus))+
+  ylim(0,quantile(df$BankcardUtilization,0.9))+theme_few()+
+  theme(plot.title=element_text(size=12))+
+  ggtitle("BankcardUtilization& ProsperRating..Alpha.")
+
+```
+
+##### 因为ggplot的配色最多支持12种不同色彩分类，而贷款类别有21种类别，
+##### 因此去除了0-空值和7-其它两个类别后，用两张图展示变量的关系。
+
+Scale1 | Scale2
+- | - 
+0 - Not Available	|	 1 - Debt Consolidation
+2 - Home Improvement	|	 3 - Business
+4 - Personal Loan	|	 5 - Student Use
+6 - Auto	|	 7- Other
+8 - Baby&Adoption	|	 9 - Boat
+10 - Cosmetic Procedure	|	 11 - Engagement Ring
+12 - Green Loans	|	 13 - Household Expenses
+14 - Large Purchases	|	 15 - Medical/Dental
+16 - Motorcycle	|	 17 - RV
+18 - Taxes	|	 19 - Vacation
+20 - Wedding Loans	|	
+
+
+##### 结合对应表格和变量分布可知，贷款类型为：Home Improvement，Personal Loan，Student Use，Cosmetic Procedure，Medical/Dental这几类的（蓝色箱线图比红色的长度较长）违约情况较多。相反，Boat，Engagement Ring，Green Loans，RV这几类贷款类型的违约情况较少。
+
+
+##### 此外，Boat、Home Improvement、Business、Personal Loan、Student Use、Cosmetic Procedure、Large Purchases这几类的可循环贷款使用率较多；Motorcycle、RV、Wedding Loans这几类贷款类型的可循环贷款使用率较少。
+
+
+>
+
+##### （17）借款人“可用循环信贷使用率”和“贷款类型”在时间上的分布
+
+
+```{r echo=FALSE, fig.height=6, fig.width=8, warning=FALSE}
+q1<-ggplot(aes(x=LoanOriginationDate,y=BankcardUtilization,
+           color=ListingCategory..numeric.),
+       data = subset(df,df$ListingCategory..numeric.==
+                       c(2,4,6,8,10,12,14,16,18,20))) + 
+  geom_point(alpha=1,size=2)+theme_few()+
+  ylim(0,quantile(df$BankcardUtilization,0.9))+
+  theme(plot.title=element_text(size=12),
+        axis.title.x = element_blank())+
+  ggtitle("BankcardUtilization & ListingCategory ( Scale1 )")+
+  scale_color_brewer(palette = "Set3",
+                     guide = guide_legend(title = 'Scale1',
+                     override.aes = list(alpha = 1, size = 3)))
+
+q2<-ggplot(aes(x=LoanOriginationDate,y=BankcardUtilization,
+           color=ListingCategory..numeric.),
+       data = subset(df,df$ListingCategory..numeric.==
+                       c(1,3,5,9,11,13,15,17,19))) + 
+  geom_point(alpha=1,size=1.5)+theme_few()+
+  ylim(0,quantile(df$BankcardUtilization,0.9))+
+  theme(plot.title=element_text(size=12),
+        axis.title.x = element_blank())+
+  ggtitle("BankcardUtilization & ListingCategory ( Scale2 )")+
+  scale_color_brewer(palette = "Paired",
+                     guide = guide_legend(title = 'Scale2',
+                     override.aes = list(alpha = 1, size = 3)))
+
+grid.arrange(q1,q2)
+```
+
+##### 贷款类型当中，数字靠后的类型，比如12 - Green Loans、13 - Household Expenses、14 - Large Purchases、
+##### 15 - Medical/Dental、16 - Motorcycle、17 - RV、18 - Taxes、19 - Vacation、20 - Wedding Loans这些，在时间上的分布也比较靠后。
+
+>
+
+##### （18）借款人“过去7年拖欠次数”和“贷款状态”在时间线上的关系分布
+
+
+```{r echo=FALSE, fig.height=4, fig.width=8,  warning=FALSE}
+
+ggplot(aes(y=DelinquenciesLast7Years,
+           x=LoanOriginationDate,
+           color=LoanStatus),data=df)+
+  #在分析中计算了置信区间
+  geom_line(stat='summary',fun.y=quantile,probs=0.1)+
+  scale_color_brewer(palette = "Pastel1",
+                     guide = guide_legend(title = 'duration',
+                                          reverse = TRUE,
+                     override.aes = list(alpha = 1, size = 2)))+
+  theme_few()+
+  theme(plot.title=element_text(size=12))+
+  ggtitle("DelinquenciesLast7Years & LoanStatus")
+
+```
+
+##### 可以看到数据在2009年有一个断层，而且两种分类的区别不明显，因此接下来用smooth分析两者的趋势。
+
+
+>
+
+##### （19）进一步计算“过去7年拖欠次数”和“贷款状态”在“2009年前后的时间线”上的关系
+
+
+```{r echo=FALSE, fig.height=4, fig.width=8, message=FALSE, warning=FALSE}
+q1<-ggplot(aes(y=DelinquenciesLast7Years,
+           x=LoanOriginationDate,
+           color=LoanStatus),
+       data=subset(df,df$LoanOriginationDate<"2009-07-01"))+
+  geom_smooth(method = 'gam')+theme_few()+
+  theme(axis.title.x = element_blank())+
+  scale_color_brewer(palette = "Pastel1",
+                     guide = guide_legend(title = 'LoanStatus',
+                                          reverse = TRUE,
+                     override.aes = list(alpha = 1, size = 2)))
+
+q2<-ggplot(aes(y=DelinquenciesLast7Years,
+           x=LoanOriginationDate,
+           color=LoanStatus),
+       data=subset(df,df$LoanOriginationDate>"2009-07-01"))+
+  geom_smooth(method = 'gam')+theme_few()+
+  scale_color_brewer(palette = "Pastel1",
+                     guide = guide_legend(title = 'LoanStatus',
+                                          reverse = TRUE,
+                     override.aes = list(alpha = 1, size = 2)))
+
+grid.arrange(q1,q2) 
+```
+
+##### 因为数据在2009年有一个断层，所以分了两张图。可以看出，过去7年拖欠次数越少，违约情况也相对越少。
+
+
+>
+
+##### （20）借款人“雇佣持续时间”、“信用等级”、”债务收入比率“和“贷款状态”的关系
+
+
+```{r echo=FALSE, fig.height=6, fig.width=8, warning=FALSE}
+q1<-ggplot(data = df,
+       aes(y = EmploymentStatusDuration,x=DebtToIncomeRatio, color = CreditGrade)) +
+  geom_point(size=1,alpha=1)+
+  xlim(0,quantile(df$DebtToIncomeRatio,0.99))+
+  ylim(0,quantile(df$EmploymentStatusDuration,0.99))+
+  facet_wrap(~df$LoanStatus)+
+  theme(axis.title.x = element_blank())+
+  scale_color_brewer(palette = "RdBu",
+                     guide = guide_legend(title = 'CreditGrade',
+                                          reverse = TRUE,
+                     override.aes = list(alpha = 1, size = 2)))
+
+
+q2<-ggplot(data = df,
+       aes(y = EmploymentStatusDuration,x=DebtToIncomeRatio, color = df$ProsperRating..Alpha.)) +
+  geom_point(size=1,alpha=1)+
+  xlim(0,quantile(df$DebtToIncomeRatio,0.99))+
+  ylim(0,quantile(df$EmploymentStatusDuration,0.99))+
+  facet_wrap(~df$LoanStatus)+
+  scale_color_brewer(palette = "PuOr",
+                     guide = guide_legend(title = 'ProsperRating',
+                                          reverse = TRUE,
+                     override.aes = list(alpha = 1, size = 2)))
+
+grid.arrange(q1,q2)
+```
+
+##### 2009年7月之前，违约的人，雇佣持续时间相对较少，债务收入比基本上高于0.6，但是2009年7月之前的这个信用评级的图中有一点异常的地方，
+
+
+##### 就是违约情况中，有不少信用评级较高的点（蓝色），并且有些聚集在债务收入比较高的地方。按常理来讲，信用评级高的人，不容易违约，债务收入比率通常也较低。
+
+
+##### 2009年7月之后的信用评级的图就不存在异常了，违约情况中，几乎很少存在信用评级较高的人（紫色），同时，信用评级较高的点（紫色）分布的位置对应者较低的债务收入比率。
+
+
+>
+
+
+### 经过以上的可视化，找出了与违约率相关的变量：
+
+- BorrowerRate
+- EmploymentStatusDuration
+- DebtToIncomeRatio
+- BankcardUtilization
+- DelinquenciesLast7Years
+- CreditScore
+
+
+##### 现在用这几个变量建立模型，探索信用等级变化对公司评价借款人信用情况的能力。
+
+
+>
+
+>
+
+# 2.建立数据模型
+
+>
+
+### 2.1信用等级：线性回归模型
+
+```{r echo=FALSE}
+
+### 对信用等级进行量化
+dt$CreditGrade <- 
+  ordered(dt$CreditGrade,
+          levels = c("NC","HR","E","D","C","B","A","AA"))%>%as.integer()
+
+dt$ProsperRating..Alpha.<-
+  ordered(dt$ProsperRating..Alpha.,
+          levels = c("HR","E","D","C","B","A","AA"))%>%as.integer()
+```
+
+>
+
+##### 查看连续变量的相关关系
+
+```{r echo=FALSE,  message=FALSE, warning=FALSE}
+
+
+listnum<-c('DebtToIncomeRatio','DelinquenciesLast7Years',
+           'BorrowerRate','BankcardUtilization','InquiriesLast6Months',
+           'CreditScore','CreditGrade','ProsperRating..Alpha.')
+
+dt<-subset(dt,select = listnum)
+```
+
+
+```{r echo=FALSE, fig.height=14, fig.width=14, message=FALSE, warning=FALSE}
+set.seed(1234)
+dt_cor <- dt[sample(1:length(dt$CreditScore), 10000), ]
+ggpairs(dt_cor,
+        lower = list(continuous = wrap("points", shape = I('.'))),
+        upper = list(combo = wrap("box", outlier.shape = I('.'))))
+```
+
+>
+
+##### 2009年7月之前的信用等级
+
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+library(memisc)
+
+m1 <- lm(I(CreditGrade)~ I(CreditScore), data = dt)
+m2 <- update(m1, ~ . + DelinquenciesLast7Years)
+m3 <- update(m2, ~ . + BankcardUtilization)
+m4 <- update(m3, ~ . + InquiriesLast6Months)
+m5 <- update(m4, ~ . + BorrowerRate)
+
+mtable(m1, m2, m3, m4, m5,
+       summary.stats=c("adj. R-squared","F","AIC"))
+```
+
+##### 2009年7月之后的信用等级
+
+```{r}
+m1 <- lm(I(ProsperRating..Alpha.)~ I(CreditScore), data = dt)
+m2 <- update(m1, ~ . + DelinquenciesLast7Years)
+m3 <- update(m2, ~ . + BankcardUtilization)
+m4 <- update(m3, ~ . + InquiriesLast6Months)
+m5 <- update(m4, ~ . + BorrowerRate)
+
+mtable(m1, m2, m3, m4, m5,
+       summary.stats=c("adj. R-squared","F","AIC"))
+```
+
+##### 2009年信用等级的可决系数是0.861，2009年7月之后的可决系数为0.915，说明模型拟合度都比较好；
+##### 并且之后的信用等级拟合度比之前的高，说明2009年07月后的信用等级比之前的能更好地反映借款人的信用。
+
+>
+
+
+### 2.2 建立随机森林预测模型
+
+
+##### 既然调整后的信用等级更好，对违约率的建模也基于2009年7月之后的数据进行。
+
+```{r echo=FALSE}
+### 分割2009年前后的数据
+rf<-subset(df,df$Phase=="After"& !is.na(df$LoanStatus) & !is.na(df$ProsperRating..Alpha.))
+```
+
+
+##### 分割训练集和测试集
+
+```{r echo=FALSE,message=FALSE}
+#训练集、测试集选择
+
+#采用SMOTE算法，用R对稀有事件进行超级采样
+set.seed(1234)
+splitIndex<-createDataPartition(rf$LoanStatus,time=1,
+                                p=0.7,list=FALSE)
+train<-rf[splitIndex,]
+test<-rf[-splitIndex,]
+table(train$LoanStatus)
+table(test$LoanStatus)
+```
+
+
+```{r echo=FALSE}
+##### 使用随机森林预测贷款坏账与否
+
+set.seed(1234)
+#训练模型
+
+forest<-randomForest(factor(LoanStatus)~BorrowerRate+
+                       DelinquenciesLast7Years+
+                       DebtToIncomeRatio+
+                       EmploymentStatus+IncomeRange+
+                       ListingCategory..numeric.+
+                       ProsperRating..Alpha.+
+                       EmploymentStatusDuration+
+                       BankcardUtilization+
+                       InquiriesLast6Months+
+                       IsBorrowerHomeowner+
+                       BorrowerState+CreditScore,
+                     data =train,importance=TRUE)
+```
+
+
+```{r echo=FALSE}
+##### 查看变量重要性
+
+importance <- importance(forest,type = 2)
+varImportance <- data.frame(Variables = row.names(importance), 
+                            Importance = round(
+                              importance[ ,'MeanDecreaseGini'],2))
+
+# 对重要性排序
+rankImportance <- varImportance %>%
+  mutate(Rank = paste0(dense_rank(desc(Importance))))
+```
+
+##### 影响因素重要程度排序
+
+```{r echo=FALSE}
+ggplot(rankImportance, aes(x = reorder(Variables, Importance), 
+                           y = Importance, fill = Importance)) +
+  geom_bar(stat='identity') + 
+  geom_text(aes(x = Variables, y = 0.5, label = Rank),
+            hjust=0, vjust=0.55, size = 4, colour = 'white') +
+  labs(x = 'Variables') +
+  coord_flip()
+```
+
+
+##### 模型运行结果及准确率
+
+```{r echo=FALSE}
+##### 对测试集样本点分类
+predit<-predict(forest,test)
+probability<-table(test$LoanStatus,predit)
+
+accuracy<-(probability[1]+probability[4])/
+  (probability[1]+probability[2]+probability[3]+probability[4])
+
+probability
+accuracy
+```
+
+##### 模型准确率约为0.77
+
+>
+
+>
+
+# 3.最终图形和摘要
+
+>
+
+### 3.1 借款人“所在州”、“过去6个月征信次数”、“过去7年拖欠次数”与“贷款状态”的关系
+
+>
+
+##### 图1 ：Distribution of BorrowerStates
+
+California，Florida，Illinois，Georgia，Texas这几个州的借款人数较多；同时North Dakota，Wyoming，Vermont，South Dakota等几个州的借款人数较少。
+
+
+##### 图2 ：BorrowerStates & LoanStatus
+
+来自不同的州的借款人，违约的概率也不同:	Alabama阿拉巴马州，	Georgia乔治亚州，Iowa爱荷华州等地区的借款人具有较高的违约率。
+
+>
+
+```{r echo=FALSE, fig.height=16, fig.width=10, message=FALSE, warning=FALSE}
+
+q1<-ggplot(data=subset(BorrowerState,BorrowerState$name!='unknown'),
+       aes(x = name,y = count, fill = count)) +
+  geom_bar(stat='identity') + theme_few()+
+  geom_text(aes(x = name, y = 0.5, 
+                label = paste("                                   ",
+                              count)),
+            hjust=0, vjust=0.55, size = 4, color = 'black')+
+  theme(axis.title.y = element_blank(),
+        plot.title=element_text(size=16))+
+  ggtitle("Distribution of BorrowerStates")+
+  coord_flip()
+
+
+q2<-ggplot(aes(BorrowerState,fill=LoanStatus),
+       data = subset(df,df$BorrowerState!="unknown")) +
+  geom_bar(position="fill",color='white',alpha=0.7,size=0.1) +
+  scale_y_continuous(breaks = seq(0,8000,500))+
+  theme(axis.text.x=element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks=element_blank(),
+        plot.title=element_text(size=16))+
+  ggtitle("BorrowerStates & LoanStatus")+coord_flip()
+
+
+q3<-ggplot(aes(LoanStatus,InquiriesLast6Months),data =df) +
+  geom_boxplot(color='pink',fill='pink',alpha=0.3,size=0.7) +
+  stat_summary(fun.y = mean,geom = 'point',color='#6699CC',size=2) +
+  ylim(-1,quantile(df$InquiriesLast6Months,0.9))+theme_few()+
+  theme(plot.title=element_text(size=16),
+        axis.title.y = element_blank(),
+        axis.text.y = element_text(angle = 90))+
+  ggtitle("InquiriesLast6Months & LoanStatus")+coord_flip()
+  
+
+q4<-ggplot(aes(LoanStatus,DelinquenciesLast7Years),data =df) +
+  geom_boxplot(color='skyblue',fill='skyblue',alpha=0.3,size=0.7) +
+  stat_summary(fun.y = mean,geom = 'point',color='#FF6699',size=2) +
+  ylim(-1,quantile(df$DelinquenciesLast7Years,0.9))+theme_few()+
+  theme(plot.title=element_text(size=16),
+        axis.title.y = element_blank(),
+        axis.text.y = element_text(angle = 90))+
+  ggtitle("DelinquenciesLast7Years & LoanStatus")+coord_flip()
+
+grid.arrange(q1,q2,q3,q4,ncol=2)
+```
+
+##### 图3 ：InquiriesLast6Months & LoanStatus
+##### 图4 ：DelinquenciesLast7Years & LoanStatus
+
+违约的借款人过去6个月征信次数和过去7年拖欠次数都比没有违约的人高。
+
+
+
+>
+
+
+### 3.2 贷款状态分类以及借款人“贷款利率”、“信用分数”和“贷款状态”的关系
+
+>
+
+##### 图1 ：LoanStatus Category and Proportion
+
+蓝色系扇形代表没有违约的，红色系是以及违约的，绿色系是当前状态，无法判断是否违约。目前大部分的贷款状态是还在进行的未逾期的贷款状态，current占比49.65%；已完成的贷款（completed）占比33.42%，坏账（chargedoff）的占比10.52%；其它情况有：4.4%的贷款已经违约，1.8%的逾期，0.18%快还完贷款了，还有0.004%取消了贷款（数据太少，显示出来只有一条线，因此删掉。）
+
+>
+
+```{r echo=FALSE,  fig.height=16, fig.width=10, warning=FALSE}
+
+q1<-ggplot(loan_status, aes(x = "", y = count)) +
+  geom_bar(stat = "identity",fill=c('#3333FF','#66CCFF',
+                                    '#CC6666','#CC9999',
+                                    '#99CCCC','#CCCC99'),
+           width =4,alpha=0.5)+
+  coord_polar(theta = "y")+
+  geom_text(aes(x = c(4.3,4,4,4.5,1,1),
+                y = c(112000,5000,9000,15000,35000,85000),
+                label = myLabel))+
+  theme_few()+
+  theme(axis.text=element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks=element_blank(),
+        panel.border=element_blank(),
+        plot.title=element_text(size=16))+
+  ggtitle("LoanStatus Category and Proportion")
+
+q2<-ggplot(aes(x=BorrowerRate,y=CreditScore,color=LoanStatus),data=df)+
+  geom_point(position = 'jitter',size=3)+
+  xlim(0,quantile(df$BorrowerRate,0.99))+
+  ylim(10,quantile(df$CreditScore,0.99))+
+  scale_color_brewer(palette = "RdPu",
+                     guide = guide_legend(title = 'LoanStatus',
+                                          reverse = TRUE,
+                     override.aes = list(alpha = 1, size = 3)))+
+  theme_few()+
+  theme(plot.title=element_text(size=16))+
+  ggtitle("BorrowerRate & CreditScore & LoanStatus")
+
+
+grid.arrange(q1,q2)
+```
+
+##### 图2 ：BorrowerRate & CreditScore & LoanStatus
+
+从散点图分布可以看到，贷款利率较高的（图中靠右部分）违约的情况更多；而贷款利率较低的（图中靠左部分）违约的情况相对较少。同时，信用分数较高的（图中靠上方的点）违约情况比信用分数较低的（图中靠下方的点）少。
+
+
+
+>
+
+
+### 3.3 借款人“雇佣持续时间”、“信用等级”、“债务收入比率”以及
+### （“可循环贷款使用率”、“贷款类型”与“贷款状态”的关系
+
+>
+
+##### 图1 ：EmploymentStatusDuration & DebtToIncomeRatio & CreditGrade
+
+违约的人，雇佣持续时间相对较少，债务收入比基本上高于0.6，但是2009年7月之前的这个信用评级的图中有一点异常的地方，就是违约情况中，有不少信用评级较高的点（蓝色），并且有些聚集在债务收入比较高的地方，按常理来讲，信用评级高的人，不容易违约，债务收入比率通常也较低。
+
+##### 图2 ：EmploymentStatusDuration & DebtToIncomeRatio & ProsperRating
+
+2009年7月之后的信用评级的图就不存在异常了，违约情况中，几乎很少存在信用评级较高的人（紫色），同时，信用评级较高的点（紫色）分布的位置对应者较低的债务收入比率。
+
+>
+
+```{r echo=FALSE, fig.height=16, fig.width=10, warning=FALSE}
+q1<-ggplot(data = df,
+       aes(y = EmploymentStatusDuration,x=DebtToIncomeRatio, color = CreditGrade)) +
+  geom_point(size=1,alpha=1)+theme_few()+
+  xlim(0,quantile(df$DebtToIncomeRatio,0.99))+
+  ylim(0,quantile(df$EmploymentStatusDuration,0.99))+
+  facet_wrap(~df$LoanStatus)+
+  theme(plot.title=element_text(size=16))+
+  ggtitle("EmploymentStatusDuration & DebtToIncomeRatio & CreditGrade")+
+  scale_color_brewer(palette = "RdBu",
+                     guide = guide_legend(title = 'CreditGrade',
+                                          reverse = TRUE,
+                     override.aes = list(alpha = 1, size = 2)))
+
+
+q2<-ggplot(data = df,
+       aes(y = EmploymentStatusDuration,x=DebtToIncomeRatio,
+           color = df$ProsperRating..Alpha.)) +
+  geom_point(size=1,alpha=1)+theme_few()+
+  xlim(0,quantile(df$DebtToIncomeRatio,0.99))+
+  ylim(0,quantile(df$EmploymentStatusDuration,0.99))+
+  facet_wrap(~df$LoanStatus)+ 
+  theme(plot.title=element_text(size=16))+
+  ggtitle("EmploymentStatusDuration & DebtToIncomeRatio & ProsperRating")+
+  scale_color_brewer(palette = "PuOr",
+                     guide = guide_legend(title = 'ProsperRate',
+                                          reverse = TRUE,
+                     override.aes = list(alpha = 1, size = 2)))
+
+q3<-ggplot(aes(x=ListingCategory..numeric.,y=BankcardUtilization,
+           fill=LoanStatus,color=LoanStatus),
+       data =df) +
+  geom_boxplot(alpha=0.3,size=0.7) +
+  stat_summary(fun.y = mean,geom = 'smooth',aes(group = LoanStatus))+
+  ylim(0,quantile(df$BankcardUtilization,0.9))+theme_few()+
+  theme(plot.title=element_text(size=16))+
+  ggtitle("BankcardUtilization & ListingCategory & LoanStatus")
+
+
+grid.arrange(q1,q2,q3)
+
+```
+
+##### 图3 ：BankcardUtilization & ListingCategory & LoanStatus
+
+因为ggplot的配色最多支持12种不同色彩分类，而贷款类别有21种类别，因此去除了0-空值和7-其它两个类别后，用两张图展示变量的关系。
+
+Scale1 | Scale2
+- | - 
+0 - Not Available	|	 1 - Debt Consolidation
+2 - Home Improvement	|	 3 - Business
+4 - Personal Loan	|	 5 - Student Use
+6 - Auto	|	 7- Other
+8 - Baby&Adoption	|	 9 - Boat
+10 - Cosmetic Procedure	|	 11 - Engagement Ring
+12 - Green Loans	|	 13 - Household Expenses
+14 - Large Purchases	|	 15 - Medical/Dental
+16 - Motorcycle	|	 17 - RV
+18 - Taxes	|	 19 - Vacation
+20 - Wedding Loans	|	
+
+
+结合对应表格和变量分布可知，贷款类型为：Home Improvement，Personal Loan，Student Use，Cosmetic Procedure，Medical/Dental这几类的（蓝色箱线图比红色的长度较长）违约情况较多。相反，Boat，Engagement Ring，Green Loans，RV这几类贷款类型的违约情况较少。
+
+此外，Boat、Home Improvement、Business、Personal Loan、Student Use、Cosmetic Procedure、Large Purchases这几类的可循环贷款使用率较多； Motorcycle、RV、Wedding Loans这几类贷款类型的可循环贷款使用率较少。
+
+>
+
+>
+
+# 4.总结反思
+
+>
+
+### 1. 总结
+
+##### 本次分析汇总了最终图形和摘要，并回答了开头的2个问题：
+
+（1）容易违约的客户具有哪些特点？
+
+通过变量之间的可视化分析，筛选出了违约的客户具有的特点：
+借款人所在地区，贷款利率，受雇佣的持续时间，债务收入的比率，可循环贷款使用率，贷款类型，信用分数；并根据历史数据建立一个准确度约为0.77的预测模型。
+
+
+（2）公司信用等级调整后是否更好地反映了借款人的信用情况？
+
+通过建立线性模型，发现2009年信用等级的可决系数是0.861，2009年7月之后的可决系数为0.915，说明模型拟合度都比较好；并且之后的信用等级拟合度比之前的高，新的信用等级确实能更好地判断借款人的信用情况。
+
+>
+
+### 2. 反思
+
+- 缺失值的处理还有待提高：
+- 数据建模理论知识有待完善和补充。
+- 本来还可以分析得更深入，但是时间和精力有限。
+
+
+>
+
+
+### 参考文献：
+
+##### https://blog.csdn.net/weixin_41100555/article/details/80033035
+
+##### https://zhuanlan.zhihu.com/p/27288744
+
+##### https://zhuanlan.zhihu.com/p/32324410
+
+##### https://zhuanlan.zhihu.com/p/28342576
+
+##### https://www.jianshu.com/p/6eb58b0be7c8
+
+##### https://blog.csdn.net/gxhzoe/article/details/80498691
